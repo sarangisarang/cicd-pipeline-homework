@@ -28,7 +28,7 @@ jobs:
           SLACK_MESSAGE: "Staging Deployment Successful! 🚀"
 
   deploy-to-production:
-    needs: deploy-to-staging # ჯერ სრულდება Staging და მერე ეს
+    needs: deploy-to-staging 
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code

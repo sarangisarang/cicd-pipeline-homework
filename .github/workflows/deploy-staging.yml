@@ -1,23 +1,51 @@
-name: Staging Deployment
+name: CI/CD Pipeline
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
 
 jobs:
-  slack-test:
+  deploy-to-staging:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - name: Checkout Code
+        uses: actions/checkout@v3
 
-      - name: Slack-Benachrichtigung senden
-        uses: slackapi/slack-github-action@v1.26.0
+      - name: Deploy to Staging Server
+        uses: appleboy/scp-action@master
         with:
-          payload: |
-            {
-              "text": "🚀 *Staging-Pipeline gestartet!* \nBenutzer: ${{ github.actor }}\nWorkflow: ${{ github.workflow }}"
-            }
+          host: ${{ secrets.STAGING_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "frontend/index.html"
+          target: "/var/www/html/"
+          strip_components: 1
+
+      - name: Notify Slack (Staging)
+        uses: rtCamp/action-slack-notify@v2
         env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_MESSAGE: "Staging Deployment Successful! 🚀"
+
+  deploy-to-production:
+    needs: deploy-to-staging # ჯერ სრულდება Staging და მერე ეს
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Deploy to Production Server
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.PRODUCTION_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "frontend/index.html"
+          target: "/var/www/html/"
+          strip_components: 1
+
+      - name: Notify Slack (Production)
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_MESSAGE: "Production Deployment Successful! 🏆"

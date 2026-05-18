@@ -1,29 +1,57 @@
-name: CI/CD Pipeline
+# ==========================================
+# STAGING PIPELINE
+# File: .github/workflows/deploy-staging.yml
+# Trigger: every push to main branch
+# ==========================================
+name: Staging Pipeline
 
 on:
   push:
     branches: [ main ]
 
 jobs:
-  deploy-to-staging:
+  deploy-staging:
     runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v3
 
-      - name: Setup Staging Server (Install Nginx)
-        uses: appleboy/ssh-action@master
+    steps:
+      # Step 1: Notify Slack that the staging pipeline has started
+      - name: Notify Slack - Pipeline Started
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_MESSAGE: |
+            🚀 *Staging Pipeline gestartet!*
+            • Gestartet von: ${{ github.actor }}
+            • Workflow: ${{ github.workflow }}
+            • Branch: ${{ github.ref_name }}
+            • Commit: ${{ github.sha }}
+          SLACK_COLOR: "#439FE0"
+
+      # Step 2: Checkout the repository code
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # Step 3: Install Nginx on staging server (only if not already installed)
+      - name: Setup Staging Server
+        uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.STAGING_IP }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            sudo apt-get update -y
-            sudo apt-get install nginx -y
-            sudo chown -R ubuntu:ubuntu /var/www/html
+            # Install Nginx only if it is not already present
+            if ! command -v nginx &> /dev/null; then
+              sudo apt-get update -y
+              sudo apt-get install nginx -y
+            fi
+            sudo systemctl enable nginx
+            sudo systemctl start nginx
+            # Give the server user write access to the web root
+            sudo chown -R $USER:$USER /var/www/html
 
-      - name: Deploy to Staging Server
-        uses: appleboy/scp-action@master
+      # Step 4: Copy index.html to the staging server
+      - name: Deploy index.html to Staging
+        uses: appleboy/scp-action@v1
         with:
           host: ${{ secrets.STAGING_IP }}
           username: ${{ secrets.SERVER_USER }}
@@ -32,42 +60,45 @@ jobs:
           target: "/var/www/html/"
           strip_components: 1
 
-      - name: Notify Slack (Staging)
-        uses: rtCamp/action-slack-notify@v2
-        env:
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
-          SLACK_MESSAGE: "Staging Deployment Successful! 🚀"
-
-  deploy-to-production:
-    needs: deploy-to-staging
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v3
-
-      - name: Setup Production Server (Install Nginx)
-        uses: appleboy/ssh-action@master
+      # Step 5: Check that Nginx is returning HTTP 200
+      - name: Health Check
+        uses: appleboy/ssh-action@v1
         with:
-          host: ${{ secrets.PRODUCTION_IP }}
+          host: ${{ secrets.STAGING_IP }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            sudo apt-get update -y
-            sudo apt-get install nginx -y
-            sudo chown -R ubuntu:ubuntu /var/www/html
+            sleep 3
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost)
+            echo "HTTP Status: $HTTP_STATUS"
+            if [ "$HTTP_STATUS" != "200" ]; then
+              echo "Health check failed!"
+              exit 1
+            fi
+            echo "Health check passed!"
 
-      - name: Deploy to Production Server
-        uses: appleboy/scp-action@master
-        with:
-          host: ${{ secrets.PRODUCTION_IP }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: "frontend/index.html"
-          target: "/var/www/html/"
-          strip_components: 1
-
-      - name: Notify Slack (Production)
+      # Step 6a: Notify Slack on success
+      - name: Notify Slack - Success
+        if: ${{ success() }}
         uses: rtCamp/action-slack-notify@v2
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
-          SLACK_MESSAGE: "Production Deployment Successful! 🏆"
+          SLACK_MESSAGE: |
+            ✅ *Staging Deployment erfolgreich!*
+            • Gestartet von: ${{ github.actor }}
+            • Workflow: ${{ github.workflow }}
+            • Branch: ${{ github.ref_name }}
+          SLACK_COLOR: good
+
+      # Step 6b: Notify Slack on failure
+      - name: Notify Slack - Failure
+        if: ${{ failure() }}
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_MESSAGE: |
+            ❌ *Staging Deployment fehlgeschlagen!*
+            • Gestartet von: ${{ github.actor }}
+            • Workflow: ${{ github.workflow }}
+            • Branch: ${{ github.ref_name }}
+          SLACK_COLOR: danger

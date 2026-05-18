@@ -1,3 +1,8 @@
+# ==========================================
+# PRODUCTION PIPELINE
+# File: .github/workflows/deploy-prod.yml
+# Trigger: only when a tag starting with "v" is pushed
+# ==========================================
 name: Production Pipeline
 
 on:
@@ -8,7 +13,9 @@ on:
 jobs:
   deploy-production:
     runs-on: ubuntu-latest
+
     steps:
+      # Step 1: Notify Slack that the production pipeline has started
       - name: Notify Slack - Pipeline Started
         uses: rtCamp/action-slack-notify@v2
         env:
@@ -18,50 +25,79 @@ jobs:
             • Gestartet von: ${{ github.actor }}
             • Workflow: ${{ github.workflow }}
             • Tag: ${{ github.ref_name }}
+            • Commit: ${{ github.sha }}
           SLACK_COLOR: "#9733EE"
 
+      # Step 2: Checkout the repository code
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      # Step 3: Install Nginx on production server (only if not already installed)
       - name: Setup Production Server
         uses: appleboy/ssh-action@v1
         with:
-          host: ${{ secrets.EC2_IPS_PROD }}
-          username: ubuntu
+          host: ${{ secrets.PRODUCTION_IP }}
+          username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
+            # Install Nginx only if it is not already present
             if ! command -v nginx &> /dev/null; then
               sudo apt-get update -y
               sudo apt-get install nginx -y
             fi
             sudo systemctl enable nginx
             sudo systemctl start nginx
-            sudo chown -R ubuntu:ubuntu /var/www/html
+            # Give the server user write access to the web root
+            sudo chown -R $USER:$USER /var/www/html
 
-      - name: Deploy to Production
+      # Step 4: Backup the current production file before deploying
+      - name: Backup Current Production File
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.PRODUCTION_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+            if [ -f /var/www/html/index.html ]; then
+              cp /var/www/html/index.html /var/www/html/index.html.backup_$TIMESTAMP
+              echo "Backup created: index.html.backup_$TIMESTAMP"
+            fi
+
+      # Step 5: Copy index.html to the production server
+      - name: Deploy index.html to Production
         uses: appleboy/scp-action@v1
         with:
-          host: ${{ secrets.EC2_IPS_PROD }}
-          username: ubuntu
+          host: ${{ secrets.PRODUCTION_IP }}
+          username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           source: "frontend/index.html"
           target: "/var/www/html/"
           strip_components: 1
 
-      - name: Health Check
+      # Step 6: Check that Nginx returns HTTP 200; rollback automatically if not
+      - name: Health Check with Rollback
         uses: appleboy/ssh-action@v1
         with:
-          host: ${{ secrets.EC2_IPS_PROD }}
-          username: ubuntu
+          host: ${{ secrets.PRODUCTION_IP }}
+          username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             sleep 3
             HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost)
+            echo "HTTP Status: $HTTP_STATUS"
             if [ "$HTTP_STATUS" != "200" ]; then
-              echo "Health check failed!"
+              echo "Health check failed! Rolling back..."
+              LATEST_BACKUP=$(ls -t /var/www/html/index.html.backup_* 2>/dev/null | head -1)
+              if [ -n "$LATEST_BACKUP" ]; then
+                cp "$LATEST_BACKUP" /var/www/html/index.html
+                echo "Rollback complete: $LATEST_BACKUP restored"
+              fi
               exit 1
             fi
+            echo "Health check passed!"
 
+      # Step 7a: Notify Slack on success
       - name: Notify Slack - Success
         if: ${{ success() }}
         uses: rtCamp/action-slack-notify@v2
@@ -74,13 +110,14 @@ jobs:
             • Tag: ${{ github.ref_name }}
           SLACK_COLOR: good
 
+      # Step 7b: Notify Slack on failure
       - name: Notify Slack - Failure
         if: ${{ failure() }}
         uses: rtCamp/action-slack-notify@v2
         env:
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
           SLACK_MESSAGE: |
-            🔴 *Production Deployment fehlgeschlagen!*
+            🔴 *Production Deployment fehlgeschlagen! Rollback ausgeführt.*
             • Gestartet von: ${{ github.actor }}
             • Workflow: ${{ github.workflow }}
             • Tag: ${{ github.ref_name }}

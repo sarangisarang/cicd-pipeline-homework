@@ -1,0 +1,87 @@
+name: Production Pipeline
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  deploy-production:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify Slack - Pipeline Started
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_MESSAGE: |
+            🏁 *Production Pipeline gestartet!*
+            • Gestartet von: ${{ github.actor }}
+            • Workflow: ${{ github.workflow }}
+            • Tag: ${{ github.ref_name }}
+          SLACK_COLOR: "#9733EE"
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Production Server
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_IPS_PROD }}
+          username: ubuntu
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            if ! command -v nginx &> /dev/null; then
+              sudo apt-get update -y
+              sudo apt-get install nginx -y
+            fi
+            sudo systemctl enable nginx
+            sudo systemctl start nginx
+            sudo chown -R ubuntu:ubuntu /var/www/html
+
+      - name: Deploy to Production
+        uses: appleboy/scp-action@v1
+        with:
+          host: ${{ secrets.EC2_IPS_PROD }}
+          username: ubuntu
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "frontend/index.html"
+          target: "/var/www/html/"
+          strip_components: 1
+
+      - name: Health Check
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_IPS_PROD }}
+          username: ubuntu
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            sleep 3
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost)
+            if [ "$HTTP_STATUS" != "200" ]; then
+              echo "Health check failed!"
+              exit 1
+            fi
+
+      - name: Notify Slack - Success
+        if: ${{ success() }}
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_MESSAGE: |
+            🏆 *Production Deployment erfolgreich!*
+            • Gestartet von: ${{ github.actor }}
+            • Workflow: ${{ github.workflow }}
+            • Tag: ${{ github.ref_name }}
+          SLACK_COLOR: good
+
+      - name: Notify Slack - Failure
+        if: ${{ failure() }}
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_MESSAGE: |
+            🔴 *Production Deployment fehlgeschlagen!*
+            • Gestartet von: ${{ github.actor }}
+            • Workflow: ${{ github.workflow }}
+            • Tag: ${{ github.ref_name }}
+          SLACK_COLOR: danger
